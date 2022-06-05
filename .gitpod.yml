@@ -1,0 +1,26 @@
+ports:
+  - port: 8000
+    onOpen: open-preview
+  # flask default port
+  - port: 5000
+    onOpen: open-preview
+  # coverage report port
+  - port: 8080
+    onOpen: open-preview
+  # ports opened by jupyter notebook
+  - port: 9000-10000
+    onOpen: ignore
+
+tasks:
+    # set VS_CODE_REMOTE to True when working in VS code remote desktop
+  - command: |
+      export VS_CODE_REMOTE=False FLASK_ENV=development
+      pip install -r requirements.txt
+      pip install -e .
+      code src/__init__.py
+      python app.py
+
+vscode:
+  extensions:
+    - ms-python.python
+    - ms-toolsai.jupyter
