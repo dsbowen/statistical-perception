@@ -5,6 +5,7 @@ pylint
 tox
 
 git+https://gitlab.com/dsbowen/hemlock@master#egg=hemlock-survey
+conditional-inference==1.0.0
 # need to downgrade eventlet, see this issue:
 # https://github.com/eventlet/eventlet/issues/702
 eventlet==0.30.2
