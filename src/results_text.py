@@ -9,7 +9,7 @@ megastudies = [
         *We estimated the voting rates associated with each letter using {regression_type} regression. The figure below shows the results. The y-axis shows the different letters, and the x-axis shows the estimated voting rates. The blue vertical line is the voting rate in a control condition in which we did not send people a letter.*
         {estimates_plot}
 
-        *We {rejected} the null hypothesis that all letters had the same effect using an ANOVA (F={f_stat:.2f}, P={pvalue:.3f}).*
+        *We {rejected} the null hypothesis that all letters had the same effect using an ANOVA (F={f_stat:.2f}, {pvalue_text}).*
 
         *We defined the treatment effect of each letter as the increase in voting rates compared to the control condition. Our best-performing letter increased voting rates by an estimated {best_estimated_effect:.01f} percentage points.*
         """,
@@ -27,7 +27,7 @@ megastudies = [
         *We estimated the completion rates associated with each nudge using {regression_type} regression. The figure below shows the results. The y-axis shows the different nudges, and the x-axis shows the estimated completion rates. The blue vertical line is the completion rate in a control condition in which we did not use a nudge.*
         {estimates_plot}
 
-        *We {rejected} the null hypothesis that all nudges had the same effect using an ANOVA (F={f_stat:.2f}, P={pvalue:.3f}).*
+        *We {rejected} the null hypothesis that all nudges had the same effect using an ANOVA (F={f_stat:.2f}, {pvalue_text}).*
 
         *We defined the treatment effect of each nudge as the increase in completion rates compared to the control condition. Our best-performing nudge increased completion rates by an estimated {best_estimated_effect:.01f} percentage points.*
         """,

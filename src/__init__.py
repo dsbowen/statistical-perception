@@ -24,6 +24,8 @@ from sqlalchemy_mutable.utils import partial
 from src.results_text import megastudies
 from src.clean_nudgeunits import SIMULATION_DATA_DIR
 
+MIN_OBS, MAX_OBS = 500, 1500
+MIN_TREATMENTS, MAX_TREATMENTS = 20, 40
 NOT_ENOUGH_INFO = (
     "no_info",
     "The authors do not give enough information to answer this question",
@@ -33,9 +35,7 @@ N_RATINGS = 10
 ORANGE = sns.color_palette().as_hex()[1]
 
 sns.set()
-assigner = Assigner(
-    {"bayes": (0, 1), "n_obs": (500, 1000, 1500), "n_treatments": (20, 30, 40)}
-)
+assigner = Assigner({"bayes": (0, 1), "reading_comprehension_first": (0, 1)})
 with open(os.path.join(SIMULATION_DATA_DIR, "control.json"), "r") as f:
     control_takeup_samples = json.load(f)
 
@@ -50,15 +50,30 @@ def seed():
     Returns:
         List[Page]: List of pages shown to the user.
     """
+    return [
+        Page(Label("CONSENT FORM HERE")),
+        Page(
+            Label(
+                """
+                The next page will take 5-15 seconds to load after you click ">>".
+                Please do not refresh the page.
+                """
+            ),
+            navigate=make_simulation_branch,
+        ),
+    ]
 
-    def plot_results(results, xlim=None):
+
+def make_simulation_branch(origin):
+    def plot_results(results, **kwargs):
         fig, ax = plt.subplots()
-        if xlim is not None:
-            ax.set_xlim(xlim)
-        results.point_plot(ax=ax)
+        results.point_plot(ax=ax, **kwargs)
         ax.axvline(control_takeup, linestyle="--")
         ax.set_ylabel(treatment_type.capitalize())
         ax.set_xlabel(f"{dep_variable.capitalize()} rate")
+        return fig, ax
+
+    def plot_to_html(fig, ax):
         estimates_figure = figure_to_html(fig)
         sns.scatterplot(
             x=takeup[::-1],
@@ -67,19 +82,26 @@ def seed():
             marker="x",
             s=50,
             label=f"True {dep_variable} rates",
+            ax=ax,
         )
-        plt.legend(loc="upper left", bbox_to_anchor=(1, 1))
-        return ax, estimates_figure, figure_to_html(fig)
+        ax.legend(loc="upper left", bbox_to_anchor=(1, 1))
+        return estimates_figure, figure_to_html(fig)
 
     def figure_to_html(fig):
         fig.savefig(buffer := io.BytesIO(), bbox_inches="tight")
         src = f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"
         return make_figure(src, figure_align="center").replace("\n", "")
 
+    # randomly generate the experiment parameters, e.g., number of observations per
+    # treatment, number of treatments, treatment types, dependent variable, etc.
     assignment = assigner.assign_user()
-    n_obs, n_treatments = assignment["n_obs"], assignment["n_treatments"]
-    reverse_variability = int(random.random() < 0.5)
-    current_user.meta_data["reverse_variability"] = reverse_variability
+    current_user.meta_data["n_obs"] = n_obs = int(np.random.uniform(MIN_OBS, MAX_OBS))
+    current_user.meta_data["n_treatments"] = n_treatments = int(
+        np.random.uniform(MIN_TREATMENTS, MAX_TREATMENTS)
+    )
+    current_user.meta_data["reverse_variability"] = reverse_variability = int(
+        random.random() < 0.5
+    )
     (
         current_user.meta_data["megastudy"],
         dep_variable,
@@ -87,6 +109,7 @@ def seed():
         results_text,
         prediction_text,
     ) = random.choice(megastudies)
+    prediction_text = prediction_text.replace("\n", "").strip()
 
     # simulate the experiment
     control_takeup = random.choice(control_takeup_samples)
@@ -112,26 +135,32 @@ def seed():
     total_obs_text = "{:,}".format(n_treatments * n_obs)
     n_obs_text = "{:,}".format(n_obs)
     f_stat = (explained_var / df_explained) / (unexplained_var / df_unexplained)
-    f_stat_text = "F={:.2f}".format(f_stat)
     pvalue = 1 - f_distribution.cdf(f_stat, df_explained, df_unexplained)
-    pvalue_text = "P<.001" if pvalue < 0.001 else "P={:.3f}".format(pvalue)
 
     # get OLS and Bayesian estimates
     cov = np.diag(takeup_estimates * (1 - takeup_estimates) / n_obs)
-    ols_results = Improper(takeup_estimates, cov).fit(title="OLS results", n_samples=2)
-    ax, ols_estimates_plot, ols_true_plot = plot_results(ols_results)
+    ols_results = Improper(takeup_estimates, cov).fit(
+        title="OLS estimates", n_samples=2
+    )
+    ols_fig, ols_ax = plot_results(ols_results)
     bayes_results = Normal(takeup_estimates, cov).fit(
-        title="Bayesian results", n_samples=2
+        title="Bayesian estimates", n_samples=2
     )
-    _, bayes_estimates_plot, bayes_true_plot = plot_results(
-        bayes_results, xlim=ax.get_xlim()
+    bayes_fig, bayes_ax = plot_results(bayes_results, robust=True, fast=True)
+    xlim = min(ols_ax.get_xlim()[0], bayes_ax.get_xlim()[0]), max(
+        ols_ax.get_xlim()[1], bayes_ax.get_xlim()[1]
     )
+    ols_ax.set_xlim(xlim)
+    bayes_ax.set_xlim(xlim)
+    ols_estimates_plot, ols_true_plot = plot_to_html(ols_fig, ols_ax)
+    bayes_estimates_plot, bayes_true_plot = plot_to_html(bayes_fig, bayes_ax)
     if assignment["bayes"]:
         estimates_plot, true_plot = bayes_estimates_plot, bayes_true_plot
         params = bayes_results.params
     else:
         estimates_plot, true_plot = ols_estimates_plot, ols_true_plot
         params = ols_results.params
+
     best_estimated_effect = "{:0.1f}".format(100 * (params[0] - control_takeup))
     best_effect = "{:.1f}".format(100 * (takeup[0] - control_takeup))
     best_treatment_was_truly_best = takeup[0] == takeup.max()
@@ -145,15 +174,122 @@ def seed():
         estimates_plot=estimates_plot,
         rejected="rejected" if pvalue < 0.05 else "failed to reject",
         f_stat=f_stat,
-        pvalue=pvalue,
+        pvalue_text="P<.001" if pvalue < 0.001 else "P={:.3f}".format(pvalue),
         best_estimated_effect=100 * (params[0] - control_takeup),
     )
 
     treatment_variability_text = get_treatment_variability_text(
         treatment_type, reverse_variability
     )
+
+    reading_comprehension_page = Page(
+        Check(
+            """
+            We will now ask you some reading comprehension questions. Remember,
+            these questions are about what the authors are communicating, **not**
+            your opinions or interpretation.
+
+            Please check the correct option below. On this page, we are asking
+            you...
+            """,
+            shuffle(
+                (1, "what the authors are communicating"),
+                (0, "how you would interpret these results"),
+            ),
+            variable="reading_comprehension_check",
+            validate=validate.compare_response(
+                1, "Please select the correct response."
+            ),
+        ),
+        Label(
+            f"""
+            The authors reported their results as follows:
+            
+            {results_text}
+            """
+        ),
+        Check(
+            "The authors tested the null hypothesis that...",
+            shuffle(
+                (0, f"all of the {treatment_type}s had different effects"),
+                (1, f"all of the {treatment_type}s had the same effect"),
+            )
+            + [NOT_ENOUGH_INFO],
+            variable="null_hypothesis_definition",
+            validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
+        ),
+        Check(
+            "Did the authors reject the null hypothesis?",
+            shuffle("Yes", "No") + [NOT_ENOUGH_INFO],
+            variable="null_hypothesis_rejected",
+            validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
+        ),
+        Check(
+            f"According to the authors, {prediction_text[0].lower() + prediction_text[1:]}",
+            shuffle(
+                ("more", f"more than {best_estimated_effect} percentage points"),
+                ("less", f"less than {best_estimated_effect} percentage points"),
+                ("equal", f"roughly {best_estimated_effect} percentage points"),
+            )
+            + [NOT_ENOUGH_INFO],
+            variable="effect_size_implication",
+            validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
+        ),
+    )
+    interpretation_page = Page(
+        Check(
+            """
+            We will now ask you some questions about how you would interpret the
+            results.
+
+            Please check the correct option below. On this page, we are asking
+            you...
+            """,
+            shuffle(
+                (0, "what the authors are communicating"),
+                (1, "how you would interpret these results"),
+            ),
+            variable="interpretation_check",
+            validate=validate.compare_response(
+                1, "Please select the correct response."
+            ),
+        ),
+        Label(
+            f"""
+            The authors reported their results as follows:
+            
+            {results_text}
+            """
+        ),
+        effect_size_prediction := Input(
+            prediction_text,
+            variable="effect_size_prediction",
+            validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
+            append="percentage points",
+            input_tag={"type": "number", "step": "any"},
+        ),
+        best_treatment_prediction := Input(
+            f"""
+            From 0-100%, how likely is it that the best-performing {treatment_type}
+            is truly the most effective?
+            """,
+            variable="best_treatment_prediction",
+            validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
+            append="%",
+            input_tag={"type": "number", "min": 0, "max": 100},
+        ),
+        treatment_variability := Select(
+            f"""
+            Rate your agreement with the following statement:
+            
+            **{treatment_variability_text}**
+            """,
+            get_agreement_ratings(reverse_variability),
+            variable="treatment_variability_estimated",
+            validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
+        ),
+    )
     return [
-        Page(Label("CONSENT FORM HERE")),
         Page(
             Label(
                 """
@@ -163,123 +299,21 @@ def seed():
 
                 To study this, we will show you the results of a hypothetical behavioral
                 science study and ask you some questions about them. We are interested
-                in your ability to understand what the authors are communicating
-                (reading comprehension) and interpret the results
+                in what you understand the authors to be communicating about their
+                results (reading comprehension) and how you interpret the results
                 (interpretation/opinion). Therefore, we will ask you questions in two
                 parts.
 
-                **Part 1: Reading comprehension.** What are the authors communicating?
+                **Reading comprehension.** What are the authors communicating?
 
-                **Part 2: Interpretation.** How would you interpret these results?
+                **Interpretation.** How would you interpret these results?
                 """
             )
         ),
-        Page(
-            Check(
-                """
-                We will now ask you some reading comprehension questions. Remember,
-                these questions are about what the authors are communicating, **not**
-                your opinions or interpretation.
-
-                Please check the correct option below. On this page, we are asking
-                you...
-                """,
-                shuffle(
-                    (1, "what the authors are communicating"),
-                    (0, "how you would interpret these results"),
-                ),
-                variable="reading_comprehension_check",
-                validate=validate.compare_response(
-                    1, "Please select the correct response."
-                ),
-            ),
-            Label(
-                f"""
-                The authors reported their results as follows:
-                
-                {results_text}
-                """
-            ),
-            Check(
-                "The authors tested the null hypothesis that...",
-                shuffle(
-                    (0, f"all of the {treatment_type}s had different effects"),
-                    (1, f"all of the {treatment_type}s had the same effect"),
-                )
-                + [NOT_ENOUGH_INFO],
-                variable="null_hypothesis_definition",
-                validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
-            ),
-            Check(
-                "Did the authors reject the null hypothesis?",
-                shuffle("Yes", "No") + [NOT_ENOUGH_INFO],
-                variable="null_hypothesis_rejected",
-                validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
-            ),
-            Check(
-                prediction_text,
-                shuffle(
-                    ("more", f"more than {best_estimated_effect} percentage points"),
-                    ("less", f"less than {best_estimated_effect} percentage points"),
-                    ("equal", f"roughly {best_estimated_effect} percentage points"),
-                )
-                + [NOT_ENOUGH_INFO],
-                variable="effect_size_implication",
-                validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
-            ),
-        ),
-        Page(
-            Check(
-                """
-                We will now ask you some questions about how you would interpret the
-                results.
-
-                Please check the correct option below. On this page, we are asking
-                you...
-                """,
-                shuffle(
-                    (0, "what the authors are communicating"),
-                    (1, "how you would interpret these results"),
-                ),
-                variable="interpretation_check",
-                validate=validate.compare_response(
-                    1, "Please select the correct response."
-                ),
-            ),
-            Label(
-                f"""
-                As a reminder, the authors reported their results as follows:
-                
-                {results_text}
-                """
-            ),
-            effect_size_prediction := Input(
-                prediction_text,
-                variable="effect_size_prediction",
-                validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
-                append="percentage points",
-                input_tag={"type": "number", "step": "any"},
-            ),
-            best_treatment_prediction := Input(
-                f"""
-                From 0-100%, how likely is it that the best-performing {treatment_type}
-                is truly the most effective?
-                """,
-                variable="best_treatment_prediction",
-                validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
-                append="%",
-                input_tag={"type": "number", "min": 0, "max": 100},
-            ),
-            treatment_variability := Select(
-                f"""
-                Rate your agreement with the following statement:
-                
-                **{treatment_variability_text}**
-                """,
-                get_agreement_ratings(reverse_variability),
-                variable="treatment_variability_estimated",
-                validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
-            ),
+        *(
+            (reading_comprehension_page, interpretation_page)
+            if assignment["reading_comprehension_first"]
+            else (interpretation_page, reading_comprehension_page)
         ),
         Page(
             Label(
@@ -327,7 +361,7 @@ def seed():
                 validate=validate.require_response(REQUIRE_RESPONSE_FEEDBACK),
             ),
         ),
-        Page(Label("Thank you for participating!")),
+        Page(Label("We have recorded your responses. Thank you for participating!")),
     ]
 
 
@@ -347,6 +381,7 @@ def get_agreement_ratings(reverse=False):
     ratings[-1][1] += " Completely agree"
     ratings[int(N_RATINGS / 2)][1] += " Neither agree nor disagree"
     return [(None, "")] + [tuple(rating) for rating in ratings]
+
 
 def get_true_label(
     question,
